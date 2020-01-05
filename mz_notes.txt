@@ -1,0 +1,82 @@
+mzmarzlo@mzmarzlo-HP-EliteBook-8440p:~$ telnet  195.245.217.140 8900
+Trying 195.245.217.140...
+Connected to 195.245.217.140.
+Escape character is '^]'.
+GET / HTTP/1.0
+User-Agent: ESP32
+Accept: */*
+Icy-MetaData: 1
+
+ICY 200 OK
+icy-notice1:<BR>This stream requires <a href="http://www.winamp.com/">Winamp</a><BR>
+icy-notice2:SHOUTcast Distributed Network Audio Server/win32 v1.9.8<BR>
+icy-name:Polskie Radio S.A. -- Program 1 -- http://moje.polskieradio.pl
+icy-genre:
+icy-url:http://stream3.polskieradio.pl:8900
+content-type:audio/mpeg
+icy-pub:0
+icy-metaint:8192
+icy-br:192
+
+[BINARY DATA...]
+------------------------------------------------
+
+
+mzmarzlo@mzmarzlo-HP-EliteBook-8440p:~$ telnet ice1.somafm.com 80
+GET /illstreet-128-mp3 HTTP/1.0
+User-Agent: ESP32
+Accept: */*
+Icy-MetaData: 1
+
+HTTP/1.0 200 OK
+Content-Type: audio/mpeg
+Date: Sun, 29 Dec 2019 19:04:42 GMT
+icy-br:128
+icy-genre:Exotica Lounge
+icy-name:Ill Street Lounge: Classic bachelor pad, playful exotica and vintage music of tomorrow. [SomaFM]
+icy-notice1:<BR>This stream requires <a href="http://www.winamp.com/">Winamp</a><BR>
+icy-notice2:SHOUTcast Distributed Network Audio Server/Linux v1.9.5<BR>
+icy-pub:0
+icy-url:http://somafm.com
+Server: Icecast 2.4.0-kh3
+Cache-Control: no-cache, no-store
+Pragma: no-cache
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Headers: Origin, Accept, X-Requested-With, Content-Type
+Access-Control-Allow-Methods: GET, OPTIONS, HEAD
+Connection: Close
+Expires: Mon, 26 Jul 1997 05:00:00 GMT
+icy-metaint:45000
+
+[BINARY DATA...]
+-----------------------------------------------------
+
+Title5=Polskie Radio MP3
+File5=http://stream3.polskieradio.pl:8900/
+
+Title5=RMF FM
+File5=http://195.150.20.242:8000/rmf_fm
+
+
+
+
+
+
+
+
+---------------------------------------------------------------------
+Tasks:
+------
+	Name : mp3_decoder_task / libfaac_decoder_task
+	Location : audio_player.c
+	Description : Used for audio decoding
+	
+	Name : gpio_handler_task
+	Location : controls.c
+	Description : Handles button for next
+	
+	Name : http_get_task
+	Location : web_radio.c
+	
+	Name : task_ui
+	Location : controls.c

@@ -11,22 +11,22 @@
 #include "esp_event_loop.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "http.h"
 #include "driver/i2s.h"
 
 #include "vector.h"
-#include "ui.h"
 #include "spiram_fifo.h"
 #include "audio_renderer.h"
 #include "web_radio.h"
 #include "playerconfig.h"
 #include "wifi.h"
 #include "app_main.h"
+
+#include "include/screen.h"
 #ifdef CONFIG_BT_SPEAKER_MODE
 #include "bt_speaker.h"
 #endif
 #include "playlist.h"
-
+#include "screen.h"
 
 #define WIFI_LIST_NUM   10
 
@@ -66,14 +66,11 @@ static void start_wifi()
     EventGroupHandle_t wifi_event_group = xEventGroupCreate();
 
     /* init wifi */
-    ui_queue_event(UI_CONNECTING);
     initialise_wifi(wifi_event_group);
 
     /* Wait for the callback to set the CONNECTED_BIT in the event group. */
     xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT,
                         false, true, portMAX_DELAY);
-
-    ui_queue_event(UI_CONNECTED);
 }
 
 static renderer_config_t *create_renderer_config()
@@ -118,7 +115,7 @@ static void start_web_radio()
 
     // start radio
     web_radio_init(radio_config);
-    web_radio_start(radio_config);
+    web_radio_start();
 }
 
 /**
@@ -130,6 +127,8 @@ void app_main()
     ESP_LOGI(TAG, "RAM left: %u", esp_get_free_heap_size());
 
     init_hardware();
+
+    initialise_screen();
 
 #ifdef CONFIG_BT_SPEAKER_MODE
     bt_speaker_start(create_renderer_config());

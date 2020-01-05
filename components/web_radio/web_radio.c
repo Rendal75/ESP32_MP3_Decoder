@@ -15,195 +15,186 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
+#include "esp_http_client.h"
 
 #include "vector.h"
 #include "web_radio.h"
-#include "http.h"
-#include "url_parser.h"
+
 #include "controls.h"
 #include "playlist.h"
 
 #define TAG "web_radio"
 #define HDR_KV_BUFF_LEN 128
+#define MSG_QUEUE_SIZE 20
+#define MSG_TICKS_TO_WAIT 1000
 
-typedef enum
+typedef enum { S_CONNECTING, S_STREAMING, S_FINISHED  } state;
+
+typedef enum { MSG_HTTP, MSG_CTRL } msg_type;
+typedef enum { MSG_HTTP_CONNECTED, MSG_HTTP_BODY_DATA, MSG_HTTP_HEADER_FINISHED, MSG_HTTP_CONNECTION_FINISHED } msg_type_http;
+typedef enum { MSG_CTRL_STOP_REQ } msg_type_ctrl;
+
+typedef struct msg_http {
+	esp_http_client_event_t evt;
+} msg_http;
+
+typedef struct msg_ctrl {
+	msg_type_ctrl id;
+} msg_ctrl;
+
+typedef struct msg {
+	msg_type type;
+	union  {
+		msg_http http;
+		msg_ctrl ctrl;
+	};
+} msg;
+
+
+int icymeta_interval = 0;
+char icymeta_text[ICY_META_BUFF_LEN];
+bool newHttpRequest = false;
+
+
+static QueueHandle_t msg_queue;
+static web_radio_t *radio_conf;
+static state current_state;
+
+static void stringtolower(char* pstr) {
+	for(char *p = pstr;*p;++p) *p=*p>0x40&&*p<0x5b?*p|0x60:*p;
+}
+
+static void set_state(state new_state) {
+	ESP_LOGE(TAG, "State: %d", new_state);
+	current_state = new_state;
+}
+
+esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 {
-    HDR_CONTENT_TYPE = 1,
-    HDR_ICY_METAINT = 2
-} header_field_t;
+	char *key;
+	char *value;
 
-typedef enum {
-    HDR_UNDEF,
-    HDR_KEY,
-    HDR_VALUE,
-    HDR_COMPLETE
-} header_processing_state;
+	switch(evt->event_id) {
+		case HTTP_EVENT_ERROR:
+			ESP_LOGE(TAG, "HTTP_EVENT_ERROR");
+			break;
+		case HTTP_EVENT_ON_CONNECTED:
+			ESP_LOGI(TAG, "HTTP_EVENT_ON_CONNECTED");
+			break;
+		case HTTP_EVENT_HEADER_SENT:
+			ESP_LOGI(TAG, "HTTP_EVENT_HEADER_SENT");
 
-header_field_t curr_header_field = 0;
-content_type_t content_type = 0;
+			audio_player_start(radio_conf->player_config);
 
-header_processing_state hdr_state= HDR_UNDEF;
-char hdr_key_buff[HDR_KV_BUFF_LEN] = {0};
-char hdr_value_buff[HDR_KV_BUFF_LEN] = {0};
-int hdr_key_buff_len = 0;
-int hdr_value_buff_len = 0;
+			break;
+		case HTTP_EVENT_ON_HEADER:
+			key = evt->header_key;
+			value = evt->header_value;
+			ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", key, value);
 
-void process_header_key(const char *at, size_t length);
-void process_header_key_complete();
-void process_header_value(const char *at, size_t length);
-void process_header_value_complete();
+			stringtolower(key);
+			if (strcmp(key, "content-type") == 0) {
+				content_type_t content_type = MIME_UNKNOWN;
+				stringtolower(value);
+				if (strstr(value, "application/octet-stream")) content_type = OCTET_STREAM;
+				if (strstr(value, "audio/aac")) content_type = AUDIO_AAC;
+				if (strstr(value, "audio/mp4")) content_type = AUDIO_MP4;
+				if (strstr(value, "audio/x-m4a")) content_type = AUDIO_MP4;
+				if (strstr(value, "audio/mpeg")) content_type = AUDIO_MPEG;
 
-void process_header_key(const char *at, size_t length) {
-    if (hdr_state == HDR_VALUE) {
-        process_header_value_complete();
-    }
-    hdr_state = HDR_KEY;
+				radio_conf->player_config->media_stream->content_type = content_type;
+				if(content_type == MIME_UNKNOWN) {
+					ESP_LOGE(TAG, "unknown content-type: %s", value);
+				}
+			}
+			else if (strcmp(key, "icy-metaint") == 0) {
+				icymeta_interval = atoi(value);
+				ESP_LOGW(TAG, "icymeta_interval=%d", icymeta_interval);
+			}
 
-    memcpy(&(hdr_key_buff[hdr_key_buff_len]), at,
-            min(length,  HDR_KV_BUFF_LEN - hdr_key_buff_len - 1));
-    hdr_key_buff_len += length;
+			break;
+		case HTTP_EVENT_ON_DATA: {
+			bool is_chunked_response = esp_http_client_is_chunked_response(evt->client);
+			ESP_LOGD(TAG, "HTTP_EVENT_ON_DATA, len=%d, chunked=%d", evt->data_len, is_chunked_response);
+			//if (!is_chunked_response) {
+				// Write out data
+				audio_stream_consumer((char*)evt->data,  evt->data_len, radio_conf->player_config);
+			//}
+			}
+			break;
+		case HTTP_EVENT_ON_FINISH:
+			ESP_LOGI(TAG, "HTTP_EVENT_ON_FINISH");
+			break;
+		case HTTP_EVENT_DISCONNECTED:
+			ESP_LOGI(TAG, "HTTP_EVENT_DISCONNECTED");
+			break;
+	}
+
+    return ESP_OK;
 }
 
-void process_header_key_complete() {
-    if (hdr_state != HDR_KEY) {
-        return;
-    }
 
-    printf("< %s : ",hdr_key_buff);
+static esp_http_client_handle_t client;
+static void http_get_task()
+{
+    for(;;) {
+		set_state(S_CONNECTING);
+		radio_conf->player_config->media_stream->eof = false;
+		newHttpRequest = true;
 
-    curr_header_field = 0;
-    if (strncmp(&hdr_key_buff, "content-type", hdr_key_buff_len) == 0) {
-        curr_header_field = HDR_CONTENT_TYPE;
-    } else if (strncmp(&hdr_key_buff, "icy-metaint", hdr_key_buff_len) == 0) {
-        curr_header_field = HDR_ICY_METAINT;
-    }
-    memset(&hdr_key_buff, 0, HDR_KV_BUFF_LEN);
-    hdr_key_buff_len = 0;
-}
+		// blocks until end of stream
+		playlist_entry_t *curr_track = playlist_curr_track(radio_conf->playlist);
 
-void process_header_value(const char *at, size_t length) {
-    if (hdr_state == HDR_KEY) {
-        process_header_key_complete();
-    }
-    hdr_state = HDR_VALUE;
+		ESP_LOGW(TAG, "Playing track: %s", curr_track->name);
+		esp_http_client_config_t config = {
+			.url = curr_track->url,
+			.event_handler = _http_event_handler,
+			.buffer_size = 10000
+		};
+		client = esp_http_client_init(&config);
 
-    memcpy(&(hdr_value_buff[hdr_value_buff_len]), at, min(length,  HDR_KV_BUFF_LEN - hdr_value_buff_len - 1));
-    hdr_value_buff_len += length;
-}
-
-void process_header_value_complete() {
-    if (hdr_state != HDR_VALUE) {
-        return;
-    }
-
-    printf("%s\n",hdr_value_buff);
-
-    if (curr_header_field == HDR_CONTENT_TYPE) {
-        if (strstr(&hdr_value_buff, "application/octet-stream")) content_type = OCTET_STREAM;
-        if (strstr(&hdr_value_buff, "audio/aac")) content_type = AUDIO_AAC;
-        if (strstr(&hdr_value_buff, "audio/mp4")) content_type = AUDIO_MP4;
-        if (strstr(&hdr_value_buff, "audio/x-m4a")) content_type = AUDIO_MP4;
-        if (strstr(&hdr_value_buff, "audio/mpeg")) content_type = AUDIO_MPEG;
-
-        if(content_type == MIME_UNKNOWN) {
-            ESP_LOGE(TAG, "unknown content-type: %s", (char*) &hdr_value_buff);
-            return -1;
+		set_state(S_STREAMING);
+		// Blocking call
+		esp_err_t err = esp_http_client_perform(client);
+		if(err) {
+			ESP_LOGE(TAG, "esp_http_client_perform->%d", err);
+			return;
+		}
+		radio_conf->player_config->media_stream->eof = true;
+		set_state(S_FINISHED);
+        while(radio_conf->player_config->decoder_status != STOPPED) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
         }
-    } else if (curr_header_field == HDR_ICY_METAINT) {
-        icymeta_interval = atoi(&hdr_value_buff);
-    }
-
-    memset(&hdr_value_buff, 0, HDR_KV_BUFF_LEN);
-    hdr_value_buff_len = 0;
-}
-
-static int on_header_field_cb(http_parser *parser, const char *at, size_t length)
-{
-    // convert to lower case for ease of string comparision
-    unsigned char *c = (unsigned char *) at;
-    for (; c < (at + length); ++c) {
-        *c = tolower(*c);
-    }
-
-    process_header_key(at, length);
-    return 0;
-}
-
-static int on_header_value_cb(http_parser *parser, const char *at, size_t length)
-{
-    process_header_value(at, length);
-    return 0;
-}
-
-static int on_headers_complete_cb(http_parser *parser)
-{
-    process_header_value_complete();
-    hdr_state = HDR_COMPLETE;
-
-    player_t *player_config = parser->data;
-
-    player_config->media_stream->content_type = content_type;
-    player_config->media_stream->eof = false;
-
-    audio_player_start(player_config);
-
-    return 0;
-}
-
-static int on_body_cb(http_parser* parser, const char *at, size_t length)
-{
-    //printf("%.*s", length, at);
-    return audio_stream_consumer(at, length, parser->data);
-}
-
-static int on_message_complete_cb(http_parser *parser)
-{
-    player_t *player_config = parser->data;
-    player_config->media_stream->eof = true;
-
-    return 0;
-}
-
-static void http_get_task(void *pvParameters)
-{
-    web_radio_t *radio_conf = pvParameters;
-
-    /* configure callbacks */
-    http_parser_settings callbacks = { 0 };
-    callbacks.on_body = on_body_cb;
-    callbacks.on_header_field = on_header_field_cb;
-    callbacks.on_header_value = on_header_value_cb;
-    callbacks.on_headers_complete = on_headers_complete_cb;
-    callbacks.on_message_complete = on_message_complete_cb;
-
-    // blocks until end of stream
-    playlist_entry_t *curr_track = playlist_curr_track(radio_conf->playlist);
-    int result = http_client_get(curr_track->url, &callbacks,
-            radio_conf->player_config);
-
-    if (result != 0) {
-        ESP_LOGE(TAG, "http_client_get error");
-    } else {
-        ESP_LOGI(TAG, "http_client_get completed");
-    }
-    // ESP_LOGI(TAG, "http_client_get stack: %d\n", uxTaskGetStackHighWaterMark(NULL));
+		esp_http_client_cleanup(client);
+	}
 
     vTaskDelete(NULL);
 }
 
-void web_radio_start(web_radio_t *config)
+void web_radio_start()
 {
+	ESP_LOGI(TAG, "web_radio_start: RAM left %d", esp_get_free_heap_size());
     // start reader task
-    xTaskCreatePinnedToCore(&http_get_task, "http_get_task", 2560, config, 20,
+    xTaskCreatePinnedToCore(&http_get_task, "http_get_task", 2560, NULL, 20,
     NULL, 0);
-}
 
-void web_radio_stop(web_radio_t *config)
-{
-    ESP_LOGI(TAG, "RAM left %d", esp_get_free_heap_size());
+    for(;;) {
+    	msg m;
+    	if(xQueueReceive(msg_queue, &m, 100000/portTICK_PERIOD_MS)) {
+    		ESP_LOGD(TAG, "Got message");
+    		switch(m.type) {
+    		case MSG_HTTP:
+				break;
+			case MSG_CTRL:
+				ESP_LOGI(TAG, "MSG_CONTROL not implemented yet !");
+				break;
+    		}
+    	}
+    	else {
+    		ESP_LOGI(TAG, "No message");
+    	}
+    }
 
-    audio_player_stop(config->player_config);
-    // reader task terminates itself
 }
 
 void web_radio_gpio_handler_task(void *pvParams)
@@ -216,39 +207,16 @@ void web_radio_gpio_handler_task(void *pvParams)
     for (;;) {
         if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
             ESP_LOGI(TAG, "GPIO[%d] intr, val: %d", io_num, gpio_get_level(io_num));
-
-            /*
-            switch (get_player_status()) {
-                case RUNNING:
-                    ESP_LOGI(TAG, "stopping player");
-                    web_radio_stop(config);
-                    break;
-
-                case STOPPED:
-                    ESP_LOGI(TAG, "starting player");
-                    web_radio_start(config);
-                    break;
-
-                default:
-                    ESP_LOGI(TAG, "player state: %d", get_player_status());
-            }
-            */
-            web_radio_stop(config);
-            playlist_entry_t *track = playlist_next(config->playlist);
-            ESP_LOGW(TAG, "next track: %s", track->name);
-
-
-            while(config->player_config->decoder_status != STOPPED) {
-                vTaskDelay(20 / portTICK_PERIOD_MS);
-            }
-
-            web_radio_start(config);
+            playlist_next(config->playlist);
+            esp_http_client_close(client);
         }
     }
 }
 
 void web_radio_init(web_radio_t *config)
 {
+	radio_conf = config;
+	msg_queue = xQueueCreate(MSG_QUEUE_SIZE, sizeof(msg));
     controls_init(web_radio_gpio_handler_task, 2048, config);
     audio_player_init(config->player_config);
 }

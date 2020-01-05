@@ -74,7 +74,7 @@ static void init_i2s(renderer_config_t *config)
     };
 
     i2s_pin_config_t pin_config = {
-            .bck_io_num = GPIO_NUM_26,
+            .bck_io_num = GPIO_NUM_26,		// BCK (black)
             .ws_io_num = GPIO_NUM_25,
             .data_out_num = GPIO_NUM_22,
             .data_in_num = I2S_PIN_NO_CHANGE
@@ -88,7 +88,8 @@ static void init_i2s(renderer_config_t *config)
         i2s_set_dac_mode(I2S_DAC_CHANNEL_BOTH_EN);
     }
     else {
-        i2s_set_pin(config->i2s_num, &pin_config);
+        esp_err_t err = i2s_set_pin(config->i2s_num, &pin_config);
+		ESP_LOGI(TAG, "i2s_set_pin -> %d", err);
     }
 
     i2s_stop(config->i2s_num);

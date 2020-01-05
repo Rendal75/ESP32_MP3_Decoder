@@ -20,12 +20,20 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 
-#include "http.h"
 #include "spiram_fifo.h"
+
 #include "spiram.h"
+#include "web_radio.h"
 #include "playerconfig.h"
 
 #define SPIREADSIZE 64
+
+#define min(a, b)                                                              \
+    ({                                                                         \
+        __typeof__(a) _a = (a);                                                \
+        __typeof__(b) _b = (b);                                                \
+        _a < _b ? _a : _b;                                                     \
+    })
 
 static int fifoRpos;
 static int fifoWpos;

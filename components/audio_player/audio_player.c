@@ -19,6 +19,7 @@
 #include "libfaad_decoder.h"
 #include "mp3_decoder.h"
 #include "controls.h"
+#include "screen.h"
 
 #define TAG "audio_player"
 #define PRIO_MAD configMAX_PRIORITIES - 2
@@ -74,6 +75,7 @@ static int start_decoder_task(player_t *player)
 }
 
 static int t;
+static char tmp_buff[64];
 
 /* Writes bytes into the FIFO queue, starts decoder task if necessary. */
 int audio_stream_consumer(const char *recv_buf, ssize_t bytes_read,
@@ -100,18 +102,22 @@ int audio_stream_consumer(const char *recv_buf, ssize_t bytes_read,
     bool enough_buffer = fill_level > min_fill_lvl;
 
     bool early_start = (bytes_in_buf > 1028 && player->media_stream->eof);
-    if (player->decoder_status != RUNNING && (enough_buffer || early_start)) {
-
-        // buffer is filled, start decoder
-        if (start_decoder_task(player) != 0) {
-            ESP_LOGE(TAG, "failed to start decoder task");
-            return -1;
-        }
+    if ((enough_buffer || early_start)) {
+    	if(player->decoder_status != RUNNING ) {
+    		player->decoder_status = RUNNING;
+			// buffer is filled, start decoder
+			if (start_decoder_task(player) != 0) {
+				ESP_LOGE(TAG, "failed to start decoder task");
+				return -1;
+			}
+    	}
     }
 
-    t = (t + 1) & 255;
+    t = (t + 1) & 31;
     if (t == 0) {
         ESP_LOGI(TAG, "Buffer fill %u%%, %d bytes", fill_level, bytes_in_buf);
+        sprintf(tmp_buff, "Buffer fill %u%%", fill_level);
+        update_header(NULL, tmp_buff);
     }
 
     return 0;

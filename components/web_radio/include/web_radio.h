@@ -21,7 +21,13 @@ typedef struct {
 } web_radio_t;
 
 void web_radio_init(web_radio_t *config);
-void web_radio_start(web_radio_t *config);
+void web_radio_start();
 
+#define ICY_META_BUFF_LEN 128
+
+extern char icymeta_text[ICY_META_BUFF_LEN];
+
+extern bool newHttpRequest;
+extern int icymeta_interval;
 
 #endif /* INCLUDE_WEB_RADIO_H_ */

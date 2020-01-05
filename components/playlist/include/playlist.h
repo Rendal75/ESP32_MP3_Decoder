@@ -8,6 +8,8 @@
 #ifndef _INCLUDE_PLAYLIST_H_
 #define _INCLUDE_PLAYLIST_H_
 
+#include "vector.h"
+
 typedef struct {
     int16_t curr_pos;
     vec_t *entries_vec;
