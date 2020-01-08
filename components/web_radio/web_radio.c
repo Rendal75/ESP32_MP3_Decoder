@@ -22,6 +22,7 @@
 
 #include "controls.h"
 #include "playlist.h"
+#include "screen.h"
 
 #define TAG "web_radio"
 #define HDR_KV_BUFF_LEN 128
@@ -50,11 +51,7 @@ typedef struct msg {
 	};
 } msg;
 
-
-int icymeta_interval = 0;
-char icymeta_text[ICY_META_BUFF_LEN];
-bool newHttpRequest = false;
-
+static int icymeta_interval;
 
 static QueueHandle_t msg_queue;
 static web_radio_t *radio_conf;
@@ -74,18 +71,18 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 	char *key;
 	char *value;
 
+	static bool first_data_received = false;
+
 	switch(evt->event_id) {
 		case HTTP_EVENT_ERROR:
 			ESP_LOGE(TAG, "HTTP_EVENT_ERROR");
 			break;
 		case HTTP_EVENT_ON_CONNECTED:
+			first_data_received = 0;
 			ESP_LOGI(TAG, "HTTP_EVENT_ON_CONNECTED");
 			break;
 		case HTTP_EVENT_HEADER_SENT:
 			ESP_LOGI(TAG, "HTTP_EVENT_HEADER_SENT");
-
-			audio_player_start(radio_conf->player_config);
-
 			break;
 		case HTTP_EVENT_ON_HEADER:
 			key = evt->header_key;
@@ -111,9 +108,12 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 				icymeta_interval = atoi(value);
 				ESP_LOGW(TAG, "icymeta_interval=%d", icymeta_interval);
 			}
-
 			break;
 		case HTTP_EVENT_ON_DATA: {
+			if(!first_data_received) {
+				audio_player_start(icymeta_interval);
+				first_data_received = 1;
+			}
 			bool is_chunked_response = esp_http_client_is_chunked_response(evt->client);
 			ESP_LOGD(TAG, "HTTP_EVENT_ON_DATA, len=%d, chunked=%d", evt->data_len, is_chunked_response);
 			//if (!is_chunked_response) {
@@ -140,10 +140,11 @@ static void http_get_task()
     for(;;) {
 		set_state(S_CONNECTING);
 		radio_conf->player_config->media_stream->eof = false;
-		newHttpRequest = true;
+		icymeta_interval = 0;
 
 		// blocks until end of stream
 		playlist_entry_t *curr_track = playlist_curr_track(radio_conf->playlist);
+		screen_on_entry_changed(curr_track);
 
 		ESP_LOGW(TAG, "Playing track: %s", curr_track->name);
 		esp_http_client_config_t config = {
@@ -152,13 +153,16 @@ static void http_get_task()
 			.buffer_size = 10000
 		};
 		client = esp_http_client_init(&config);
+		esp_http_client_set_header(client, "User-Agent", "ESP32");
+		esp_http_client_set_header(client, "Accept", "audio/mpeg, audio/x-mpeg, audio/mp3, audio/x-mp3, audio/mpeg3, audio/x-mpeg3, audio/mpg, audio/x-mpg, audio/x-mpegaudio, application/octet-stream, audio/mpegurl, audio/mpeg-url, audio/x-mpegurl, audio/x-scpls, audio/scpls, application/pls, application/x-scpls, application/pls+xml, */*");
+		esp_http_client_set_header(client, "Icy-MetaData", "1");
 
 		set_state(S_STREAMING);
 		// Blocking call
 		esp_err_t err = esp_http_client_perform(client);
 		if(err) {
-			ESP_LOGE(TAG, "esp_http_client_perform->%d", err);
-			return;
+			ESP_LOGE(TAG, "esp_http_client_perform - >%s", esp_err_to_name(err));
+			continue;
 		}
 		radio_conf->player_config->media_stream->eof = true;
 		set_state(S_FINISHED);
@@ -174,9 +178,9 @@ static void http_get_task()
 void web_radio_start()
 {
 	ESP_LOGI(TAG, "web_radio_start: RAM left %d", esp_get_free_heap_size());
+	http_get_task();
     // start reader task
-    xTaskCreatePinnedToCore(&http_get_task, "http_get_task", 2560, NULL, 20,
-    NULL, 0);
+    //xTaskCreatePinnedToCore(&http_get_task, "http_get_task", 2560, NULL, 20,   NULL, 0);
 
     for(;;) {
     	msg m;

@@ -28,13 +28,6 @@
 
 #define SPIREADSIZE 64
 
-#define min(a, b)                                                              \
-    ({                                                                         \
-        __typeof__(a) _a = (a);                                                \
-        __typeof__(b) _b = (b);                                                \
-        _a < _b ? _a : _b;                                                     \
-    })
-
 static int fifoRpos;
 static int fifoWpos;
 static int fifoFill;
@@ -123,134 +116,14 @@ void spiRamFifoRead(char *buff, int len) {
 
 */
 
-enum FIFO_FLAG { DATA, ICY_META_LENGTH, ICY_META_CONTENT };
-enum FIFO_FLAG fifoFlag = DATA;
 
-unsigned int metaLength = 0, readMetaBytes = 0, readDataBytes = 0;
-
-void resetReader() {
-	fifoFlag = DATA;
-	readDataBytes = 0;
-}
-
-void resetMetaData(bool resetText) {
-	metaLength = 0;
-	readMetaBytes = 0;
-
-	if (resetText)
-		icymeta_text[0] = 0;
-}
-
-// returns bytes remaining to be processed
-int processMetaData(const char *buff, int buffLen) {
-	switch (fifoFlag) {
-	case ICY_META_LENGTH:
-		if (buffLen <= 0) {
-			return 0;
-		}
-
-		metaLength = buff[0] * 16;
-
-		// Cleanup for meta content
-		++buff;
-		--buffLen;
-		readMetaBytes = 0;
-		fifoFlag = ICY_META_CONTENT;
-
-		return processMetaData(buff, buffLen);
-
-	case ICY_META_CONTENT:;
-		bool dataInSegment = buffLen > (metaLength - readMetaBytes);
-
-		while (1) {
-			// Finished reading meta, switch to data
-			if (readMetaBytes == metaLength) {
-				// Persist previous meta if no meta content received
-				if (metaLength > 0) {
-					printf("d/ decoded meta %s\n", icymeta_text);
-				}
-
-				icymeta_text[readMetaBytes < ICY_META_BUFF_LEN - 1
-								 ? readMetaBytes
-								 : ICY_META_BUFF_LEN - 1] = 0;
-
-				// Cleanup
-				resetReader();
-				resetMetaData(false);
-				return buffLen;
-			}
-
-			if (buffLen <= 0) {
-				break;
-			}
-
-			if (readMetaBytes < ICY_META_BUFF_LEN - 1) {
-				// Metadata content can be added to meta buffer
-				icymeta_text[readMetaBytes] = (*buff);
-				++buff;
-				--buffLen;
-				++readMetaBytes;
-				continue;
-			} else {
-				// Metadata content exceeds metadata buffer limit, consume all
-				// metadata possible
-				icymeta_text[ICY_META_BUFF_LEN - 1] = 0;
-				int bytesToRead =
-					dataInSegment ? metaLength - readMetaBytes : buffLen;
-
-				buff += bytesToRead;
-				buffLen -= bytesToRead;
-				readMetaBytes += bytesToRead;
-				return processMetaData(buff, buffLen);
-			}
-		}
-
-	default:
-		return 0;
-	}
-}
-
-//Write bytes to the FIFO
+/*
+ * Write bytes to the FIFO
+ * @returns amount of bytes inside the buffer
+ */
 void spiRamFifoWrite(const char *buff, int buffLen) {
 
-	if (buffLen <= 0) {
-		return;
-	}
-
-	if (newHttpRequest) {
-		newHttpRequest = false;
-		resetReader();
-		resetMetaData(true);
-	}
-
-	// ================ Icy MetaData Processing ================
-
-	int endMetaLength = 0;
-	bool metaInBuffSegment = false;
-
-	if (icymeta_interval > 0) {
-
-		switch (fifoFlag) {
-		case DATA:
-			metaInBuffSegment = (icymeta_interval - readDataBytes) < buffLen;
-
-			if (metaInBuffSegment) {
-				endMetaLength = buffLen - (icymeta_interval - readDataBytes);
-				buffLen = min(buffLen, icymeta_interval - readDataBytes);
-			}
-			break;
-
-		default:;
-			int metaBytesProcessed = buffLen - processMetaData(buff, buffLen);
-			buff += metaBytesProcessed;
-			buffLen -= metaBytesProcessed;
-		}
-	}
-
-	// ================ Stream Data Processing ================
-
 	int n;
-	readDataBytes += buffLen;
 	while (buffLen > 0) {
 		n = buffLen;
 
@@ -264,7 +137,7 @@ void spiRamFifoWrite(const char *buff, int buffLen) {
 
 		xSemaphoreTake(mux, portMAX_DELAY);
 		if ((SPIRAMSIZE - fifoFill) < n) {
-			// printf("FIFO full.\n");
+			// printf("FIFO full.\n")
 			// Drat, not enough free room in FIFO. Wait till there's some read and try again.
 			fifoOvfCnt++;
 			xSemaphoreGive(mux);
@@ -283,21 +156,12 @@ void spiRamFifoWrite(const char *buff, int buffLen) {
 		}
 	}
 
-	// ================ Icy MetaData Processing ================
-
-	if (metaInBuffSegment && endMetaLength > 0) {
-		fifoFlag = ICY_META_LENGTH;
-		spiRamFifoWrite(buff, endMetaLength);
-	}
 }
 
 //Get amount of bytes in use
 int spiRamFifoFill() {
-	int ret;
-	xSemaphoreTake(mux, portMAX_DELAY);
-	ret=fifoFill;
-	xSemaphoreGive(mux);
-	return ret;
+	// MZ : here mux lock was taken... why ? Let return a dirty value
+	return fifoFill;
 }
 
 int spiRamFifoFree() {

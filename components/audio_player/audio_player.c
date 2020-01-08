@@ -20,9 +20,23 @@
 #include "mp3_decoder.h"
 #include "controls.h"
 #include "screen.h"
+#include "web_radio.h"
+#include "icy_filter_stream.h"
 
 #define TAG "audio_player"
 #define PRIO_MAD configMAX_PRIORITIES - 2
+
+
+void on_meta(char* meta) {
+	//ESP_LOGW(TAG, "On Meta:%s", meta);
+	screen_on_meta(meta);
+}
+
+static icy_filter_stream filter_stream = {
+	.out = spiRamFifoWrite,
+	.on_meta = on_meta
+};
+
 
 static player_t *player_instance = NULL;
 static component_status_t player_status = UNINITIALIZED;
@@ -81,6 +95,7 @@ static char tmp_buff[64];
 int audio_stream_consumer(const char *recv_buf, ssize_t bytes_read,
         void *user_data)
 {
+	assert(bytes_read);
     player_t *player = user_data;
 
     // don't bother consuming bytes if stopped
@@ -90,9 +105,7 @@ int audio_stream_consumer(const char *recv_buf, ssize_t bytes_read,
         return -1;
     }
 
-    if (bytes_read > 0) {
-        spiRamFifoWrite(recv_buf, bytes_read);
-    }
+    icy_filter_stream_write(&filter_stream, recv_buf, bytes_read);
 
     int bytes_in_buf = spiRamFifoFill();
     uint8_t fill_level = (bytes_in_buf * 100) / spiRamFifoLen();
@@ -113,12 +126,7 @@ int audio_stream_consumer(const char *recv_buf, ssize_t bytes_read,
     	}
     }
 
-    t = (t + 1) & 31;
-    if (t == 0) {
-        ESP_LOGI(TAG, "Buffer fill %u%%, %d bytes", fill_level, bytes_in_buf);
-        sprintf(tmp_buff, "Buffer fill %u%%", fill_level);
-        update_header(NULL, tmp_buff);
-    }
+    screen_on_fifo_buffer(spiRamFifoFill(), spiRamFifoLen());
 
     return 0;
 }
@@ -135,10 +143,13 @@ void audio_player_destroy()
     player_status = UNINITIALIZED;
 }
 
-void audio_player_start()
+void audio_player_start(int icymeta_interval)
 {
     renderer_start();
     player_status = RUNNING;
+
+    filter_stream.icy_interval = icymeta_interval;
+    icy_filter_stream_init(&filter_stream);
 }
 
 void audio_player_stop()

@@ -19,6 +19,7 @@
 #include "driver/gpio.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "include/screen.h"
 #include "tftspi.h"
 #include "tft.h"
@@ -30,10 +31,8 @@
 #define SPI_BUS TFT_HSPI_HOST
 // ==========================================================
 
+#define TAG "screen"
 
-static int _demo_pass = 0;
-static uint8_t doprint = 1;
-static uint8_t run_gs_demo = 0; // Run gray scale demo if set to 1
 static struct tm* tm_info;
 static char tmp_buff[64];
 static time_t time_now, time_last = 0;
@@ -399,4 +398,46 @@ void initialise_screen()
 	//triangle_demo();
 	TFT_fillWindow(TFT_BLACK);
 	update_header("", "");
+}
+
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 240
+
+/*
+ * StreamTitle='erwer';StreamUrl='dsfsf'
+ */
+#define STREAM_TITLE_LEN 30
+char stream_title[STREAM_TITLE_LEN];
+
+#define STREAM_URL_LEN 30
+char stream_url[STREAM_URL_LEN];
+
+void screen_on_meta(char* meta) {
+	ESP_LOGI(TAG, "meta:%s", meta);
+
+	TFT_fillWindow(TFT_BLACK);
+	TFT_print(meta, 0, 100);
+}
+
+void screen_on_fifo_buffer(int current_fill, int size) {
+	int w = (current_fill * SCREEN_WIDTH)/ size;
+	TFT_drawFastHLine(0, 30, w, TFT_GREEN);
+	TFT_drawFastHLine(w+1, 30, SCREEN_WIDTH-w-1, TFT_RED);
+}
+
+#define RADIO_NAME_LEN 20
+char radio_name[RADIO_NAME_LEN];
+
+void screen_on_entry_changed(playlist_entry_t* entry) {
+	if(entry==NULL) {
+		radio_name[0] = '\0';
+	}
+	else {
+		strncpy(radio_name, entry->name, RADIO_NAME_LEN);
+	}
+	disp_header(radio_name);
+}
+
+void screen_refreshTime(void) {
+	update_header(NULL, "");
 }

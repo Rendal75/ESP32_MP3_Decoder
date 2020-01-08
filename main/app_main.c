@@ -118,6 +118,22 @@ static void start_web_radio()
     web_radio_start();
 }
 
+void ui_task() {
+	int i;
+	for(i=0;;i++) {
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		//screen_refreshTime();
+		ESP_LOGI(TAG, "Tick %d", i);
+	}
+}
+
+void start_ui() {
+	if (xTaskCreatePinnedToCore(ui_task, "ui-task", 10000, NULL,
+			configMAX_PRIORITIES - 2, NULL, 1) != pdPASS)
+	{
+		ESP_LOGE(TAG, "ERROR creating ui_task! Out of memory?");
+	}
+}
 /**
  * entry point
  */
@@ -134,6 +150,7 @@ void app_main()
     bt_speaker_start(create_renderer_config());
 #else
     start_wifi();
+    start_ui();
     start_web_radio();
 #endif
 
