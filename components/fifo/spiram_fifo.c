@@ -26,7 +26,7 @@
 #include "web_radio.h"
 #include "playerconfig.h"
 
-#define SPIREADSIZE 64
+#define SPIREADSIZE 64*8
 
 static int fifoRpos;
 static int fifoWpos;
@@ -51,6 +51,13 @@ static char fakespiram[SPIRAMSIZE];
 #define spiRamWrite(pos, buf, n) memcpy(&fakespiram[pos], buf, n)
 #define spiRamRead(pos, buf, n) memcpy(buf, &fakespiram[pos], n)
 #endif
+
+static void trigger_fifo_ui_refresh() {
+	msg m;
+	m.type = MSG_FIFO;
+	m.fifo.id = MSG_FIFO_UPDATED;
+	web_radio_post(&m);
+}
 
 //Initialize the FIFO
 int spiRamFifoInit() {
@@ -104,6 +111,7 @@ void spiRamFifoRead(char *buff, int len) {
 			xSemaphoreGive(semCanWrite); //Indicate writer thread there's some free room in the fifo
 		}
 	}
+	trigger_fifo_ui_refresh();
 }
 
 /*
@@ -155,7 +163,11 @@ void spiRamFifoWrite(const char *buff, int buffLen) {
 			xSemaphoreGive(semCanRead); // Tell reader thread there's some data in the fifo.
 		}
 	}
+	trigger_fifo_ui_refresh();
+}
 
+int spiRamFifoFillPercentage() {
+	return (spiRamFifoFill() * 100 / spiRamFifoLen());
 }
 
 //Get amount of bytes in use

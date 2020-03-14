@@ -157,7 +157,7 @@ static void _dispTime()
 }
 
 //---------------------------------
-static void disp_header(char *info)
+void disp_header(char *info)
 {
 	TFT_fillScreen(TFT_BLACK);
 	TFT_resetclipwin();
@@ -398,46 +398,4 @@ void initialise_screen()
 	//triangle_demo();
 	TFT_fillWindow(TFT_BLACK);
 	update_header("", "");
-}
-
-#define SCREEN_WIDTH 320
-#define SCREEN_HEIGHT 240
-
-/*
- * StreamTitle='erwer';StreamUrl='dsfsf'
- */
-#define STREAM_TITLE_LEN 30
-char stream_title[STREAM_TITLE_LEN];
-
-#define STREAM_URL_LEN 30
-char stream_url[STREAM_URL_LEN];
-
-void screen_on_meta(char* meta) {
-	ESP_LOGI(TAG, "meta:%s", meta);
-
-	TFT_fillWindow(TFT_BLACK);
-	TFT_print(meta, 0, 100);
-}
-
-void screen_on_fifo_buffer(int current_fill, int size) {
-	int w = (current_fill * SCREEN_WIDTH)/ size;
-	TFT_drawFastHLine(0, 30, w, TFT_GREEN);
-	TFT_drawFastHLine(w+1, 30, SCREEN_WIDTH-w-1, TFT_RED);
-}
-
-#define RADIO_NAME_LEN 20
-char radio_name[RADIO_NAME_LEN];
-
-void screen_on_entry_changed(playlist_entry_t* entry) {
-	if(entry==NULL) {
-		radio_name[0] = '\0';
-	}
-	else {
-		strncpy(radio_name, entry->name, RADIO_NAME_LEN);
-	}
-	disp_header(radio_name);
-}
-
-void screen_refreshTime(void) {
-	update_header(NULL, "");
 }

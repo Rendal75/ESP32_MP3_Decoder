@@ -14,27 +14,21 @@
 #include "driver/gpio.h"
 
 #include "controls.h"
+#include "web_radio.h"
 
-
-static xQueueHandle gpio_evt_queue = NULL;
-static TaskHandle_t *gpio_task;
 #define ESP_INTR_FLAG_DEFAULT 0
 
 /* gpio event handler */
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    uint32_t gpio_num = (uint32_t) arg;
+    msg m;
+    m.type = MSG_CTRL;
+    m.ctrl.gpio_num = (uint32_t) arg;
 
-    xQueueSendToBackFromISR(gpio_evt_queue, &gpio_num, &xHigherPriorityTaskWoken);
-
-    if(xHigherPriorityTaskWoken) {
-        portYIELD_FROM_ISR();
-    }
+    web_radio_post_from_isr(&m);
 }
 
-
-void controls_init(TaskFunction_t gpio_handler_task, const uint16_t usStackDepth, void *user_data)
+void controls_init()
 {
     gpio_config_t io_conf;
 
@@ -50,15 +44,6 @@ void controls_init(TaskFunction_t gpio_handler_task, const uint16_t usStackDepth
     io_conf.pull_up_en = 1;
     gpio_config(&io_conf);
 
-    //create a queue to handle gpio event from isr
-    gpio_evt_queue = xQueueCreate(2, sizeof(uint32_t));
-    gpio_handler_param_t *params = calloc(1, sizeof(gpio_handler_param_t));
-    params->gpio_evt_queue = gpio_evt_queue;
-    params->user_data = user_data;
-
-    //start gpio task
-    xTaskCreatePinnedToCore(gpio_handler_task, "gpio_handler_task", usStackDepth, params, 10, gpio_task, 0);
-
     //install gpio isr service
     gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
 
@@ -72,7 +57,5 @@ void controls_init(TaskFunction_t gpio_handler_task, const uint16_t usStackDepth
 void controls_destroy()
 {
     gpio_isr_handler_remove(GPIO_NUM_0);
-    vTaskDelete(gpio_task);
-    vQueueDelete(gpio_evt_queue);
     // TODO: free gpio_handler_param_t params
 }

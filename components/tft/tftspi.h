@@ -151,17 +151,17 @@
 
 // The pins configured here are the native spi pins for HSPI interface
 // Any other valid pin combination can be used
-#define PIN_NUM_MISO 19		// SPI MISO
-#define PIN_NUM_MOSI 23		// SPI MOSI
-#define PIN_NUM_CLK  18		// SPI CLOCK pin
-#define PIN_NUM_CS   15		// Display CS pin
-#define PIN_NUM_DC   2		// Display command/data pin
+#define PIN_NUM_MISO 15		// SPI MISO
+#define PIN_NUM_MOSI 17		// SPI MOSI
+#define PIN_NUM_CLK  16		// SPI CLOCK pin
+#define PIN_NUM_CS   19		// Display CS pin
+#define PIN_NUM_DC   5		// Display command/data pin
 #define PIN_NUM_TCS  0		// Touch screen CS pin (NOT used if USE_TOUCH=0)
 
 // --------------------------------------------------------------
 // ** Set Reset and Backlight pins to 0 if not used !
 // ** If you want to use them, set them to some valid GPIO number
-#define PIN_NUM_RST  4  	// GPIO used for RESET control
+#define PIN_NUM_RST  18  	// GPIO used for RESET control
 
 #define PIN_NUM_BCKL 0  	// GPIO used for backlight control
 #define PIN_BCKL_ON  0  	// GPIO value for backlight ON

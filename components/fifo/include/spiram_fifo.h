@@ -11,5 +11,6 @@ long  spiRamGetUnderrunCt();
 
 void spiRamFifoReset();
 int spiRamFifoLen();
+int spiRamFifoFillPercentage();
 
 #endif

@@ -21,8 +21,8 @@
 #include "driver/i2s.h"
 #include "audio_renderer.h"
 #include "audio_player.h"
+#include "audio_decoder.h"
 #include "spiram_fifo.h"
-#include "mp3_decoder.h"
 #include "common_buffer.h"
 
 #define TAG "mad_decoder"
@@ -56,6 +56,7 @@ static enum mad_flow input(struct mad_stream *stream, buffer_t *buf, player_t *p
 
         // stop requested, terminate immediately
         if(player->decoder_command == CMD_STOP) {
+        	ESP_LOGW(TAG, "Stop requested");
             return MAD_FLOW_STOP;
         }
 
@@ -67,17 +68,36 @@ static enum mad_flow input(struct mad_stream *stream, buffer_t *buf, player_t *p
 
             // EOF reached, stop decoder when all frames have been consumed
             if(player->media_stream->eof) {
+            	ESP_LOGW(TAG, "EOF reached");
                 return MAD_FLOW_STOP;
             }
 
-            //Wait until there is enough data in the buffer. This only happens when the data feed
-            //rate is too low, and shouldn't normally be needed!
-            ESP_LOGE(TAG, "Buffer underflow, need %d bytes.", buf_free_capacity_after_purge(buf));
-            vTaskDelay(500/portTICK_PERIOD_MS);
-            buf_underrun_cnt++;
-            //We both silence the output as well as wait a while by pushing silent samples into the i2s system.
-            //This waits for about 200mS
-            renderer_zero_dma_buffer();
+			//Wait until there is enough data in the buffer. This only happens when the data feed
+			//rate is too low, and shouldn't normally be needed!
+			ESP_LOGE(TAG, "Buffer underflow, need %d bytes.", buf_free_capacity_after_purge(buf));
+			buf_underrun_cnt++;
+			//We both silence the output as well as wait a while by pushing silent samples into the i2s system.
+			//This waits for about 200mS
+			renderer_zero_dma_buffer();
+
+			while(true) {
+				int fillPercent = spiRamFifoFillPercentage();
+				if(fillPercent>80) {
+					ESP_LOGW(TAG, "Buffering over");
+					break;
+				}
+				ESP_LOGW(TAG, "Buffering... till 80, currently at %d percent", fillPercent);
+				vTaskDelay(300/portTICK_PERIOD_MS);
+				if(player->decoder_command == CMD_STOP) {
+					ESP_LOGW(TAG, "Stop requested");
+					return MAD_FLOW_STOP;
+				}
+				if(player->media_stream->eof) {
+					ESP_LOGW(TAG, "EOF reached");
+					return MAD_FLOW_STOP;
+				}
+			}
+
         } else {
             //Read some bytes from the FIFO to re-fill the buffer.
             fill_read_buffer(buf);
@@ -104,9 +124,8 @@ static enum mad_flow error(void *data, struct mad_stream *stream, struct mad_fra
 
 //This is the main mp3 decoding task. It will grab data from the input buffer FIFO in the SPI ram and
 //output it to the I2S port.
-void mp3_decoder_task(void *pvParameters)
+static void start(player_t *player)
 {
-    player_t *player = pvParameters;
 
     int ret;
     struct mad_stream *stream;
@@ -140,6 +159,8 @@ void mp3_decoder_task(void *pvParameters)
         if (input(stream, buf, player) == MAD_FLOW_STOP ) {
             break;
         }
+
+
 
         // decode frames until MAD complains
         while(1) {
@@ -180,7 +201,6 @@ void mp3_decoder_task(void *pvParameters)
     ESP_LOGI(TAG, "decoder stopped");
 
     ESP_LOGI(TAG, "MAD decoder stack: %d\n", uxTaskGetStackHighWaterMark(NULL));
-    vTaskDelete(NULL);
 }
 
 /* Called by the NXP modifications of libmad. Sets the needed output sample rate. */
@@ -198,3 +218,8 @@ void render_sample_block(short *sample_buff_ch0, short *sample_buff_ch1, int num
     return;
 }
 
+
+audio_decoder_t audio_decoder_mp3 = {
+		.start = start,
+		.stop = NULL
+};

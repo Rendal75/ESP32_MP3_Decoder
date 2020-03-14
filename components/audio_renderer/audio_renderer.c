@@ -74,9 +74,9 @@ static void init_i2s(renderer_config_t *config)
     };
 
     i2s_pin_config_t pin_config = {
-            .bck_io_num = GPIO_NUM_26,		// BCK (black)
+            .bck_io_num = GPIO_NUM_26,
             .ws_io_num = GPIO_NUM_25,
-            .data_out_num = GPIO_NUM_22,
+            .data_out_num = GPIO_NUM_33, // labeled G23 on my board
             .data_in_num = I2S_PIN_NO_CHANGE
     };
 
@@ -117,6 +117,22 @@ void render_samples(char *buf, uint32_t buf_len, pcm_format_t *buf_desc)
 
     uint8_t buf_bytes_per_sample = (buf_desc->bit_depth / 8);
     uint32_t num_samples = buf_len / buf_bytes_per_sample / buf_desc->num_channels;
+
+    // Apply gain reduction
+    if(buf_bytes_per_sample==0) {
+    	int16_t * b = (int16_t*) buf;
+    	int i;
+    	for(int i=0; i<buf_len/2; i++) {
+    		b[i] = b[i]/8;
+    	}
+    }
+    else if(buf_bytes_per_sample==4) {
+    	int32_t* b = (int32_t*) buf;
+    	int i;
+    	for(int i=0; i<buf_len/4; i++) {
+    		b[i] = b[i]/8;
+    	}
+    }
 
     // formats match, we can write the whole block
     if (buf_desc->bit_depth == renderer_instance->bit_depth

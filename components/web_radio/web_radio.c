@@ -8,9 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
+#include "driver/gpio.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -19,37 +22,27 @@
 
 #include "vector.h"
 #include "web_radio.h"
-
+#include "spiram_fifo.h"
 #include "controls.h"
 #include "playlist.h"
 #include "screen.h"
+#include "tft.h"
+#include "icy_parser.h"
 
 #define TAG "web_radio"
 #define HDR_KV_BUFF_LEN 128
 #define MSG_QUEUE_SIZE 20
 #define MSG_TICKS_TO_WAIT 1000
 
+ #define min(a,b) \
+   ({ __typeof__ (a) _a = (a); \
+       __typeof__ (b) _b = (b); \
+     _a < _b ? _a : _b; })
+
+static bool http_stop_requested = false;
 typedef enum { S_CONNECTING, S_STREAMING, S_FINISHED  } state;
+static char* s_state[] = { "CONNECTING", "STREAMING" , "FINISHED" };
 
-typedef enum { MSG_HTTP, MSG_CTRL } msg_type;
-typedef enum { MSG_HTTP_CONNECTED, MSG_HTTP_BODY_DATA, MSG_HTTP_HEADER_FINISHED, MSG_HTTP_CONNECTION_FINISHED } msg_type_http;
-typedef enum { MSG_CTRL_STOP_REQ } msg_type_ctrl;
-
-typedef struct msg_http {
-	esp_http_client_event_t evt;
-} msg_http;
-
-typedef struct msg_ctrl {
-	msg_type_ctrl id;
-} msg_ctrl;
-
-typedef struct msg {
-	msg_type type;
-	union  {
-		msg_http http;
-		msg_ctrl ctrl;
-	};
-} msg;
 
 static int icymeta_interval;
 
@@ -57,12 +50,22 @@ static QueueHandle_t msg_queue;
 static web_radio_t *radio_conf;
 static state current_state;
 
+#define STREAM_TITLE_LEN 60
+char stream_title[STREAM_TITLE_LEN];
+
+#define STREAM_URL_LEN 60
+char stream_url[STREAM_URL_LEN];
+
+
+#define RADIO_NAME_LEN 40
+static char radio_name[RADIO_NAME_LEN];
+
 static void stringtolower(char* pstr) {
 	for(char *p = pstr;*p;++p) *p=*p>0x40&&*p<0x5b?*p|0x60:*p;
 }
 
 static void set_state(state new_state) {
-	ESP_LOGE(TAG, "State: %d", new_state);
+	ESP_LOGE(TAG, "State: %s", s_state[new_state]);
 	current_state = new_state;
 }
 
@@ -70,6 +73,8 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 {
 	char *key;
 	char *value;
+	msg m;
+	m.type = MSG_HTTP;
 
 	static bool first_data_received = false;
 
@@ -78,8 +83,10 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 			ESP_LOGE(TAG, "HTTP_EVENT_ERROR");
 			break;
 		case HTTP_EVENT_ON_CONNECTED:
-			first_data_received = 0;
 			ESP_LOGI(TAG, "HTTP_EVENT_ON_CONNECTED");
+			m.http.id = MSG_HTTP_CONNECTED;
+			first_data_received = 0;
+			web_radio_post(&m);
 			break;
 		case HTTP_EVENT_HEADER_SENT:
 			ESP_LOGI(TAG, "HTTP_EVENT_HEADER_SENT");
@@ -133,15 +140,42 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+static TimerHandle_t timer_handle_1s;
+static TimerHandle_t timer_handle_10s;
+
+static void timerCallback(TimerHandle_t pxTimer) {
+	static int counter = 0;
+	msg m;
+	m.type = MSG_TIMER;
+	//ESP_LOGI(TAG, "timerCallback :%p", pxTimer);
+	counter++;
+	if(pxTimer==timer_handle_1s) {
+		m.timer.id = counter % 10 == 0 ? MSG_TIMER_10S : MSG_TIMER_1S;
+	}
+	else if(pxTimer==timer_handle_10s) {
+		m.timer.id = MSG_TIMER_10S;
+	}
+	else {
+		ESP_LOGE(TAG, "Unexpected timer !");
+	}
+
+	web_radio_post(&m);
+}
+
+static void init_timers(void) {
+	timer_handle_1s = xTimerCreate("Timer-1s", 1000 / portTICK_PERIOD_MS, pdTRUE, (void*) 0, timerCallback);
+	timer_handle_10s = xTimerCreate("Timer-10s", 10000 / portTICK_PERIOD_MS, pdTRUE, (void*) 0, timerCallback);
+	ESP_LOGI(TAG, "Created timers: 1s:%p, 10s:%p", timer_handle_1s, timer_handle_10s);
+	assert(timer_handle_1s);
+	assert(timer_handle_10s);
+}
 
 static esp_http_client_handle_t client;
-static void http_get_task()
+static void http_get_task(void* ptr)
 {
     for(;;) {
 		set_state(S_CONNECTING);
-		radio_conf->player_config->media_stream->eof = false;
 		icymeta_interval = 0;
-
 		// blocks until end of stream
 		playlist_entry_t *curr_track = playlist_curr_track(radio_conf->playlist);
 		screen_on_entry_changed(curr_track);
@@ -158,15 +192,15 @@ static void http_get_task()
 		esp_http_client_set_header(client, "Icy-MetaData", "1");
 
 		set_state(S_STREAMING);
-		// Blocking call
 		esp_err_t err = esp_http_client_perform(client);
 		if(err) {
 			ESP_LOGE(TAG, "esp_http_client_perform - >%s", esp_err_to_name(err));
+			esp_http_client_cleanup(client);
 			continue;
 		}
 		radio_conf->player_config->media_stream->eof = true;
 		set_state(S_FINISHED);
-        while(radio_conf->player_config->decoder_status != STOPPED) {
+        while(radio_conf->player_config->decoder_status == RUNNING) {
             vTaskDelay(20 / portTICK_PERIOD_MS);
         }
 		esp_http_client_cleanup(client);
@@ -175,22 +209,125 @@ static void http_get_task()
     vTaskDelete(NULL);
 }
 
+
+#if(WEBRADIO_TASK_STATS==1)
+static TaskHandle_t cpu0_TaskHandle, cpu1_TaskHandle;
+
+/*
+ * Monitoring code.
+ *
+ * Create 2 low priority task, one per core.
+ * At timer trigger, we show their cpu usage percentage
+ */
+static void monitoring_init(void) {
+	cpu0_TaskHandle = xTaskGetIdleTaskHandleForCPU( 0 );
+	cpu1_TaskHandle = xTaskGetIdleTaskHandleForCPU( 1 );
+}
+
+static char taskBuffer[1024];
+static void screen_refreshIdle(void) {
+	bzero(taskBuffer, 1024);
+	ESP_LOGW(TAG, "Dumping tasks stats:");
+	vTaskGetRunTimeStats(taskBuffer);
+	puts(taskBuffer);
+}
+#endif
+
+
+
+
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 240
+
+
+static void handle_ui_fifo_update(int current_fill, int size) {
+	int w = (current_fill * SCREEN_WIDTH)/ size;
+	TFT_drawFastHLine(0, 30, w, TFT_GREEN);
+	TFT_drawFastHLine(w+1, 30, SCREEN_WIDTH-w-1, TFT_RED);
+}
+
+
+void screen_on_entry_changed(playlist_entry_t* entry) {
+	if(entry==NULL) {
+		radio_name[0] = '\0';
+	}
+	else {
+		strncpy(radio_name, entry->name, RADIO_NAME_LEN - 1);
+	}
+	msg m;
+	m.type = MSG_HTTP;
+	m.http.id = MSG_HTTP_RADIO_UPDATE;
+	web_radio_post(&m);
+}
+
+
+static void handle_ui_refreshTime(void) {
+	char tmp_buff[64];
+	time_t time_now;
+	struct tm* tm_info;
+    time(&time_now);
+	tm_info = localtime(&time_now);
+	uint32_t ramleft = esp_get_free_heap_size();
+	sprintf(tmp_buff, "uptime=%02d:%02d:%02d ram-left=%06d", tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, ramleft);
+
+	update_header(NULL, tmp_buff);
+}
+
 void web_radio_start()
 {
 	ESP_LOGI(TAG, "web_radio_start: RAM left %d", esp_get_free_heap_size());
-	http_get_task();
+
+	BaseType_t r = xTimerStart(timer_handle_1s, 0);
+	assert(r!=pdFAIL);
+
+	if (xTaskCreatePinnedToCore(http_get_task, "http-get-task", 3000, NULL,
+			configMAX_PRIORITIES - 2, NULL, 1) != pdPASS)
+	{
+		ESP_LOGE(TAG, "ERROR creating http_get_task! Out of memory?");
+	}
+	;
     // start reader task
     //xTaskCreatePinnedToCore(&http_get_task, "http_get_task", 2560, NULL, 20,   NULL, 0);
 
-    for(;;) {
+	int i;
+	int io_num;
+    for(i=0;;i++) {
     	msg m;
-    	if(xQueueReceive(msg_queue, &m, 100000/portTICK_PERIOD_MS)) {
-    		ESP_LOGD(TAG, "Got message");
+    	if(xQueueReceive(msg_queue, &m, 10000/portTICK_PERIOD_MS)) {
+    		ESP_LOGD(TAG, "i=%d", i);
     		switch(m.type) {
     		case MSG_HTTP:
+    			if(m.http.id==MSG_HTTP_RADIO_UPDATE) {
+    				disp_header(radio_name);
+    			}
 				break;
 			case MSG_CTRL:
-				ESP_LOGI(TAG, "MSG_CONTROL not implemented yet !");
+				io_num = m.ctrl.gpio_num;
+				ESP_LOGI(TAG, "GPIO[%d] intr, val: %d media_Stream=%p", io_num, gpio_get_level(io_num), radio_conf->player_config->media_stream);
+				audio_player_stop();
+				//radio_conf->player_config->media_stream->eof = true;
+				http_stop_requested = true;
+				playlist_next(radio_conf->playlist);
+				esp_http_client_close(client);
+				ESP_LOGI(TAG, "Client closed");
+				break;
+			case MSG_TIMER:
+				//ESP_LOGI(TAG, "Timer id=%d", m.timer.id);
+				if(m.timer.id==MSG_TIMER_1S) {
+					handle_ui_refreshTime();
+				}
+#if(WEBRADIO_TASK_STATS==1)
+				else if(m.timer.id==MSG_TIMER_10S) {
+					screen_refreshIdle();
+				}
+#endif
+				break;
+			case MSG_PLAYER:
+				TFT_fillWindow(TFT_BLACK);
+				TFT_print(stream_title, 0, 100);
+				break;
+			case MSG_FIFO:
+				handle_ui_fifo_update(spiRamFifoFill(), spiRamFifoLen());
 				break;
     		}
     	}
@@ -201,27 +338,15 @@ void web_radio_start()
 
 }
 
-void web_radio_gpio_handler_task(void *pvParams)
-{
-    gpio_handler_param_t *params = pvParams;
-    web_radio_t *config = params->user_data;
-    xQueueHandle gpio_evt_queue = params->gpio_evt_queue;
-
-    uint32_t io_num;
-    for (;;) {
-        if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
-            ESP_LOGI(TAG, "GPIO[%d] intr, val: %d", io_num, gpio_get_level(io_num));
-            playlist_next(config->playlist);
-            esp_http_client_close(client);
-        }
-    }
-}
-
 void web_radio_init(web_radio_t *config)
 {
 	radio_conf = config;
 	msg_queue = xQueueCreate(MSG_QUEUE_SIZE, sizeof(msg));
-    controls_init(web_radio_gpio_handler_task, 2048, config);
+	init_timers();
+    controls_init();
+#if(WEBRADIO_TASK_STATS==1)
+    monitoring_init();
+#endif
     audio_player_init(config->player_config);
 }
 
@@ -230,3 +355,56 @@ void web_radio_destroy(web_radio_t *config)
     controls_destroy(config);
     audio_player_destroy(config->player_config);
 }
+
+void web_radio_post_from_isr(msg* m) {
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    xQueueSendToBackFromISR(msg_queue, m, &xHigherPriorityTaskWoken);
+
+    if(xHigherPriorityTaskWoken) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+void web_radio_post(msg* m) {
+
+    if(xQueueSend(msg_queue, m, 20 / portTICK_PERIOD_MS) != pdPASS ) {
+    	ESP_LOGE(TAG, "Failed to post message, queue full!");
+    	return;
+    }
+
+}
+
+
+
+/*
+ * StreamTitle='erwer';StreamUrl='dsfsf'
+ */
+void screen_on_meta(char* meta) {
+	ESP_LOGI(TAG, "meta:%s", meta);
+
+	icy_parser_t parser;
+	icy_parser_init(meta, &parser);
+	stream_title[0] = '\0';
+	for(;;) {
+		bool got = icy_parser_next(&parser);
+		if(!got) {
+			break;
+		}
+		int len = min(strlen("StreamTitle"), parser.key_len);
+		if(strncmp("StreamTitle", &parser.data[parser.key_start], len)==0) {
+			len = min(STREAM_TITLE_LEN-1, parser.value_len);
+			strncpy(stream_title, &parser.data[parser.value_start], len);
+			stream_title[len] = '\0';
+			ESP_LOGI(TAG, "title:[%s]", stream_title);
+			break;
+		}
+	}
+
+	msg m;
+	m.type = MSG_PLAYER;
+	m.player.id = MSG_PLAYER_ICY_UPDATE;
+	web_radio_post(&m);
+}
+
+

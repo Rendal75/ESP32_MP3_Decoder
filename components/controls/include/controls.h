@@ -14,7 +14,7 @@ typedef struct {
 } gpio_handler_param_t;
 
 
-void controls_init(TaskFunction_t gpio_handler_task, const uint16_t usStackDepth, void *user_data);
+void controls_init();
 void controls_destroy();
 
 #endif
